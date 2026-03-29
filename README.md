@@ -59,6 +59,33 @@ warnings = scheduler.detect_conflicts(plan.scheduled_tasks)
 
 ---
 
+## Testing PawPal+
+
+### Run the tests
+
+```bash
+python -m pytest tests/test_pawpal.py -v
+```
+
+### What the tests cover
+
+| Test | What it verifies |
+|---|---|
+| `test_mark_complete_sets_completed_at` | `TaskLog.mark_complete()` stamps `completed_at` and clears skip state |
+| `test_add_task_increases_pet_task_count` | `Pet.get_active_task_templates()` correctly filters tasks by pet |
+| `test_sort_by_time_chronological_order` | Tasks are returned in window order: morning → afternoon → evening |
+| `test_sort_by_time_no_window_goes_last` | Tasks with no preferred window sort after all windowed tasks |
+| `test_complete_daily_task_creates_next_occurrence` | Completing a daily task adds exactly one new template with a fresh ID |
+| `test_complete_as_needed_task_does_not_recur` | Completing an as-needed task returns `None` and does not grow templates |
+| `test_detect_conflicts_flags_overlapping_tasks` | Overlapping scheduled tasks produce a warning naming both tasks |
+| `test_detect_conflicts_adjacent_tasks_no_warning` | Back-to-back tasks that share only an endpoint produce no warning |
+
+### Confidence Level: ★★★★☆ (4/5)
+
+The core scheduling behaviors — sorting, recurrence, and conflict detection — are well-covered and all 8 tests pass. One star is withheld because the tests do not yet cover the full `generate_plan` pipeline end-to-end, `fit_to_time_blocks` overflow/deferral behavior, or the `is_due_today` weekly boundary edge case (task completed exactly 7 days ago).
+
+---
+
 ## Getting started
 
 ### Setup
