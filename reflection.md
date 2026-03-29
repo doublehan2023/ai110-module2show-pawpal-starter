@@ -23,121 +23,29 @@ The classes and their responsibilities:
 - **DailyPlan** — the output: an ordered list of scheduled tasks, a deferred list, and a plain-English reasoning string
 - **ScheduledTask** — a CareTask placed at a specific time slot within the plan
 
-```mermaid
-classDiagram
-    class Owner {
-        +String id
-        +String name
-        +String email
-        +String phone
-        +List~Pet~ pets
-        +register()
-        +login()
-        +updateProfile()
-    }
 
-    class Pet {
-        +String id
-        +String name
-        +String species
-        +String breed
-        +int age
-        +float weight
-        +String ownerId
-        +List~String~ medicalNeeds
-        +getCareRequirements()
-        +getActiveTaskTemplates()
-    }
-
-    class CareTask {
-        +String id
-        +String petId
-        +String type
-        +String name
-        +String frequency
-        +int durationMinutes
-        +String priority
-        +String preferredTimeWindow
-        +String notes
-        +isDueToday() bool
-        +getNextDueDate() date
-        +estimateDuration() int
-    }
-
-    class TaskLog {
-        +String id
-        +String taskId
-        +datetime completedAt
-        +bool skipped
-        +String skipReason
-        +markComplete()
-        +markSkipped()
-        +getStreak() int
-    }
-
-    class OwnerConstraints {
-        +List~TimeBlock~ availableTimeBlocks
-        +String energyLevel
-        +List~TimeBlock~ blackoutTimes
-        +Dict preferences
-        +int maxTasksPerDay
-        +getAvailableMinutes() int
-        +isTimeAvailable(slot) bool
-        +applyPreferences(tasks) List~CareTask~
-    }
-
-    class DailyPlan {
-        +date date
-        +String ownerId
-        +List~ScheduledTask~ scheduledTasks
-        +List~CareTask~ deferredTasks
-        +int totalTime
-        +String reasoning
-        +generate()
-        +regenerate(constraints)
-        +summarize() String
-        +explain() String
-    }
-
-    class ScheduledTask {
-        +String taskId
-        +datetime scheduledTime
-        +int durationMinutes
-        +String priority
-        +bool canDefer
-        +defer()
-        +complete()
-        +swap(otherTask)
-    }
-
-    class Scheduler {
-        +List~Pet~ petProfiles
-        +List~CareTask~ taskTemplates
-        +OwnerConstraints constraints
-        +List~TaskLog~ taskHistory
-        +analyzeDueTasks() List~CareTask~
-        +rankByPriority(tasks) List~CareTask~
-        +fitToTimeBlocks(tasks) List~ScheduledTask~
-        +generatePlan() DailyPlan
-        +explainDecisions() String
-    }
-
-    Owner "1" --> "1..*" Pet : owns
-    Pet "1" --> "0..*" CareTask : has
-    CareTask "1" --> "0..*" TaskLog : logged by
-    Owner "1" --> "1" OwnerConstraints : has
-    Scheduler --> OwnerConstraints : uses
-    Scheduler --> "0..*" CareTask : reads
-    Scheduler --> "0..*" TaskLog : reads
-    Scheduler --> DailyPlan : produces
-    DailyPlan "1" --> "0..*" ScheduledTask : contains
-    ScheduledTask --> CareTask : references
-```
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes, the design changed in several ways after reviewing the initial skeleton for missing relationships and logic bottlenecks.
+
+**1. Replaced string IDs with direct object references**
+The initial design linked classes using string IDs (e.g. `pet_id` on `CareTask`, `task_id` on `TaskLog`, `owner_id` on `DailyPlan`). This meant every method that needed related data had to do a manual lookup. The fix was to store direct object references alongside the IDs — `CareTask` now holds a `pet: Pet`, `TaskLog` holds a `task: CareTask`, and `DailyPlan` holds `owner: Owner` and `pet: Pet` directly. This makes traversal natural and avoids external lookup logic scattered across methods.
+
+**2. `is_due_today()` now accepts task history**
+Originally, `CareTask.is_due_today()` had no access to past completions, so it couldn't correctly handle tasks with `frequency = "daily"` (a task already done today shouldn't be scheduled again). The fix was to add a `logs: list[TaskLog]` parameter so the method can check whether the task was already completed today.
+
+**3. `total_time_minutes` became a computed property**
+The initial design stored `total_time_minutes` as a plain field on `DailyPlan`. This could silently drift out of sync if `scheduled_tasks` was modified after the plan was created. Converting it to a `@property` that sums durations from `scheduled_tasks` ensures it's always accurate with no maintenance burden.
+
+**4. `fit_to_time_blocks()` now takes `OwnerConstraints` explicitly**
+The original signature only accepted a list of tasks, so `preferred_time_window` on each `CareTask` could never be matched against the owner's actual time blocks. Passing `constraints` explicitly gives the method everything it needs to honor time preferences.
+
+**5. `generate_plan()` now chains sub-methods explicitly**
+The initial design left `generate_plan()` as a single opaque stub. The fix was to have it explicitly call `analyze_due_tasks()` → `rank_by_priority()` → `fit_to_time_blocks()` → `explain_decisions()` in sequence, passing return values between steps. This makes the scheduling pipeline transparent and each step independently testable.
+
+**6. `Owner` now links directly to `OwnerConstraints`**
+The `Scheduler` originally held `Owner` and `OwnerConstraints` as separate, unrelated fields. Adding `constraints: OwnerConstraints` directly to `Owner` means constraints are always reachable from the owner object, which will matter if multi-owner or re-planning scenarios are added later.
 
 ---
 
