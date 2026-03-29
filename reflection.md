@@ -2,10 +2,137 @@
 
 ## 1. System Design
 
+- Add a pet
+- Schedule a walk
+- See today's tasks
+- Check finished tasks
+
+
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+My initial design centered on separating **data** (what exists) from **logic** (what decides). I identified 8 classes organized around the core loop: an owner has pets, pets have tasks, tasks get scheduled into a daily plan.
+
+The classes and their responsibilities:
+
+- **Owner** — stores profile info and links to their pets
+- **Pet** — holds pet details and medical needs; knows what care it requires
+- **CareTask** — a reusable task template (e.g. "daily walk, 30 min, high priority"); knows if it's due today
+- **TaskLog** — records each completed or skipped instance of a task; tracks streaks and history
+- **OwnerConstraints** — captures the owner's available time blocks, energy level, and preferences for a given day
+- **Scheduler** — the planning brain; reads due tasks, task history, and constraints, then produces a ranked, time-fitted plan
+- **DailyPlan** — the output: an ordered list of scheduled tasks, a deferred list, and a plain-English reasoning string
+- **ScheduledTask** — a CareTask placed at a specific time slot within the plan
+
+```mermaid
+classDiagram
+    class Owner {
+        +String id
+        +String name
+        +String email
+        +String phone
+        +List~Pet~ pets
+        +register()
+        +login()
+        +updateProfile()
+    }
+
+    class Pet {
+        +String id
+        +String name
+        +String species
+        +String breed
+        +int age
+        +float weight
+        +String ownerId
+        +List~String~ medicalNeeds
+        +getCareRequirements()
+        +getActiveTaskTemplates()
+    }
+
+    class CareTask {
+        +String id
+        +String petId
+        +String type
+        +String name
+        +String frequency
+        +int durationMinutes
+        +String priority
+        +String preferredTimeWindow
+        +String notes
+        +isDueToday() bool
+        +getNextDueDate() date
+        +estimateDuration() int
+    }
+
+    class TaskLog {
+        +String id
+        +String taskId
+        +datetime completedAt
+        +bool skipped
+        +String skipReason
+        +markComplete()
+        +markSkipped()
+        +getStreak() int
+    }
+
+    class OwnerConstraints {
+        +List~TimeBlock~ availableTimeBlocks
+        +String energyLevel
+        +List~TimeBlock~ blackoutTimes
+        +Dict preferences
+        +int maxTasksPerDay
+        +getAvailableMinutes() int
+        +isTimeAvailable(slot) bool
+        +applyPreferences(tasks) List~CareTask~
+    }
+
+    class DailyPlan {
+        +date date
+        +String ownerId
+        +List~ScheduledTask~ scheduledTasks
+        +List~CareTask~ deferredTasks
+        +int totalTime
+        +String reasoning
+        +generate()
+        +regenerate(constraints)
+        +summarize() String
+        +explain() String
+    }
+
+    class ScheduledTask {
+        +String taskId
+        +datetime scheduledTime
+        +int durationMinutes
+        +String priority
+        +bool canDefer
+        +defer()
+        +complete()
+        +swap(otherTask)
+    }
+
+    class Scheduler {
+        +List~Pet~ petProfiles
+        +List~CareTask~ taskTemplates
+        +OwnerConstraints constraints
+        +List~TaskLog~ taskHistory
+        +analyzeDueTasks() List~CareTask~
+        +rankByPriority(tasks) List~CareTask~
+        +fitToTimeBlocks(tasks) List~ScheduledTask~
+        +generatePlan() DailyPlan
+        +explainDecisions() String
+    }
+
+    Owner "1" --> "1..*" Pet : owns
+    Pet "1" --> "0..*" CareTask : has
+    CareTask "1" --> "0..*" TaskLog : logged by
+    Owner "1" --> "1" OwnerConstraints : has
+    Scheduler --> OwnerConstraints : uses
+    Scheduler --> "0..*" CareTask : reads
+    Scheduler --> "0..*" TaskLog : reads
+    Scheduler --> DailyPlan : produces
+    DailyPlan "1" --> "0..*" ScheduledTask : contains
+    ScheduledTask --> CareTask : references
+```
 
 **b. Design changes**
 
