@@ -176,6 +176,44 @@ class CareTask:
         """Return the expected duration in minutes (uses the stored value)."""
         return self.duration_minutes
 
+    def schedule_next_occurrence(self) -> Optional["CareTask"]:
+        """
+        Create and return a new CareTask representing the next recurrence of
+        this task, or None if the task does not repeat automatically.
+
+        A fresh ``uuid4`` ID is assigned so that completion logs for the
+        current occurrence are not mistaken for logs of the new one when
+        ``is_due_today`` scans task history.  All other fields (name, pet,
+        duration, priority, preferred_time_window, notes) are copied verbatim.
+
+        Args:
+            None — operates on ``self``.
+
+        Returns:
+            A new CareTask with a unique ID for the next occurrence, or None
+            when ``self.frequency`` is ``'as-needed'`` (caller decides when
+            that task resurfaces).
+
+        Notes:
+            Only ``'daily'`` and ``'weekly'`` frequencies trigger recurrence.
+            The returned task is *not* automatically added to any scheduler;
+            ``Scheduler.complete_task`` handles that side-effect.
+        """
+        if self.frequency not in ("daily", "weekly"):
+            return None
+        return CareTask(
+            id=str(uuid.uuid4()),
+            pet_id=self.pet_id,
+            pet=self.pet,
+            name=self.name,
+            task_type=self.task_type,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            frequency=self.frequency,
+            preferred_time_window=self.preferred_time_window,
+            notes=self.notes,
+        )
+
 
 # ---------------------------------------------------------------------------
 # TaskLog
@@ -264,6 +302,7 @@ class DailyPlan:
     scheduled_tasks: list[ScheduledTask] = field(default_factory=list)
     deferred_tasks: list[CareTask] = field(default_factory=list)
     reasoning: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def total_time_minutes(self) -> int:
@@ -305,6 +344,132 @@ class Scheduler:
     task_templates: list[CareTask]
     constraints: OwnerConstraints
     task_history: list[TaskLog] = field(default_factory=list)
+
+    # -- Filter ---------------------------------------------------------------
+
+    def filter_tasks(
+        self,
+        *,
+        pet_name: Optional[str] = None,
+        completed: Optional[bool] = None,
+    ) -> list[CareTask]:
+        """
+        Return a filtered view of ``self.task_templates`` based on pet name
+        and/or completion status for today.
+
+        Both parameters are keyword-only and optional; omitting both returns
+        the full template list unchanged.  Filters are applied in order:
+        pet_name first, then completion status.
+
+        Completion is determined by scanning ``self.task_history`` for logs
+        whose ``completed_at`` date matches today and ``skipped`` is False.
+
+        Args:
+            pet_name: Case-insensitive pet name to match (e.g. ``'Luna'``).
+                      Tasks whose ``task.pet.name`` does not match are
+                      excluded.  Pass ``None`` to skip this filter.
+            completed: ``True``  — return only tasks completed today.
+                       ``False`` — return only tasks not yet completed today.
+                       ``None``  — no completion filter applied.
+
+        Returns:
+            A new list of CareTask objects that satisfy all supplied filters.
+            The original ``task_templates`` list is never mutated.
+        """
+        today = date.today()
+        completed_today_ids = {
+            log.task_id
+            for log in self.task_history
+            if log.completed_at and log.completed_at.date() == today and not log.skipped
+        }
+
+        results = list(self.task_templates)
+
+        if pet_name is not None:
+            results = [t for t in results if t.pet.name.lower() == pet_name.lower()]
+
+        if completed is True:
+            results = [t for t in results if t.id in completed_today_ids]
+        elif completed is False:
+            results = [t for t in results if t.id not in completed_today_ids]
+
+        return results
+
+    # -- Complete & recur -----------------------------------------------------
+
+    def complete_task(self, scheduled_task: "ScheduledTask") -> tuple["TaskLog", Optional[CareTask]]:
+        """
+        Mark a scheduled task as complete, persist the log, and automatically
+        register the next occurrence for recurring tasks.
+
+        Steps performed:
+          1. Calls ``scheduled_task.complete()`` to produce a ``TaskLog``
+             stamped with the current time.
+          2. Appends the log to ``self.task_history`` so future calls to
+             ``filter_tasks`` and ``is_due_today`` reflect the completion.
+          3. Calls ``task.schedule_next_occurrence()``.  If a next task is
+             returned (frequency is ``'daily'`` or ``'weekly'``), it is
+             appended to ``self.task_templates`` so it surfaces in the next
+             planning cycle.
+
+        Args:
+            scheduled_task: The ``ScheduledTask`` from the current plan that
+                            the owner has just finished.
+
+        Returns:
+            A ``(TaskLog, next_task)`` tuple where:
+            - ``TaskLog``   is the completion record (id, task_id,
+                            completed_at set to now, skipped=False).
+            - ``next_task`` is the newly created ``CareTask`` for the next
+                            occurrence, or ``None`` for ``'as-needed'`` tasks.
+
+        Notes:
+            Because ``self.task_templates`` is a mutable list shared with
+            callers, appending ``next_task`` is visible outside this method
+            immediately.  Capture ``len(task_templates)`` before calling if
+            you need a before/after count.
+        """
+        log = scheduled_task.complete()
+        self.task_history.append(log)
+
+        next_task = scheduled_task.task.schedule_next_occurrence()
+        if next_task is not None:
+            self.task_templates.append(next_task)
+
+        return log, next_task
+
+    # -- Sort by time ---------------------------------------------------------
+
+    def sort_by_time(self, tasks: list[CareTask]) -> list[CareTask]:
+        """
+        Return a new list of tasks ordered chronologically by their preferred
+        time window, with priority as a tiebreaker within each window.
+
+        Sort key (ascending tuple):
+          1. Window start hour from ``TIME_WINDOW_HOURS``:
+               morning → 6, afternoon → 12, evening → 17,
+               no window (``None``) → ``float('inf')`` (sorted last).
+          2. Priority score from ``PRIORITY_ORDER``:
+               high → 0, medium → 1, low → 2  (lower = earlier).
+
+        This is intentionally separate from ``rank_by_priority`` — use this
+        method when you want the day laid out as a readable timeline; use
+        ``rank_by_priority`` when the scheduler needs to pack tasks by
+        urgency.
+
+        Args:
+            tasks: Any list of ``CareTask`` objects (need not be from
+                   ``self.task_templates``).
+
+        Returns:
+            A new sorted list.  The input list is not mutated.
+        """
+        def time_key(task: CareTask):
+            window_start = TIME_WINDOW_HOURS.get(task.preferred_time_window or "", None)
+            hour = window_start[0] if window_start is not None else float("inf")
+            return (hour, PRIORITY_ORDER.get(task.priority, 1))
+
+        return sorted(tasks, key=time_key)
 
     # -- Step 1 --------------------------------------------------------------
 
@@ -405,6 +570,57 @@ class Scheduler:
 
         return "\n".join(lines)
 
+    # -- Conflict detection --------------------------------------------------
+
+    def detect_conflicts(self, scheduled: list[ScheduledTask]) -> list[str]:
+        """
+        Scan a list of scheduled tasks for time-window overlaps and return
+        a human-readable warning for each conflict found.
+
+        Algorithm (O(n²) pairwise scan):
+          For every unique pair (a, b) in ``scheduled``:
+            Compute a_end = a.scheduled_time + a.duration_minutes
+            Compute b_end = b.scheduled_time + b.duration_minutes
+            Overlap condition:  a.start < b_end  AND  b.start < a_end
+
+          This is the standard interval-overlap test: two half-open intervals
+          [s1, e1) and [s2, e2) overlap iff s1 < e2 and s2 < e1.
+
+        Each warning message includes:
+          - Both task names
+          - Their start–end times formatted as 12-hour clock strings
+          - A scope label: ``[same pet]`` or ``[different pets]``
+
+        The method never raises or mutates state — it is safe to call on any
+        list of ``ScheduledTask`` objects, including hand-crafted ones not
+        produced by ``generate_plan``.
+
+        Args:
+            scheduled: The list of ``ScheduledTask`` objects to check.
+                       Typically ``DailyPlan.scheduled_tasks``, but any list
+                       works.
+
+        Returns:
+            A list of warning strings, one per conflicting pair.  An empty
+            list means no overlaps were detected.
+        """
+        warnings = []
+        for i, a in enumerate(scheduled):
+            a_end = a.scheduled_time + timedelta(minutes=a.duration_minutes)
+            for b in scheduled[i + 1:]:
+                b_end = b.scheduled_time + timedelta(minutes=b.duration_minutes)
+                if a.scheduled_time < b_end and b.scheduled_time < a_end:
+                    same_pet = a.task.pet_id == b.task.pet_id
+                    scope = "same pet" if same_pet else "different pets"
+                    warnings.append(
+                        f"WARNING: '{a.task.name}' "
+                        f"({a.scheduled_time.strftime('%I:%M %p')}–{a_end.strftime('%I:%M %p')}) "
+                        f"overlaps with '{b.task.name}' "
+                        f"({b.scheduled_time.strftime('%I:%M %p')}–{b_end.strftime('%I:%M %p')}) "
+                        f"[{scope}]"
+                    )
+        return warnings
+
     # -- Orchestrator --------------------------------------------------------
 
     def generate_plan(self) -> DailyPlan:
@@ -417,6 +633,7 @@ class Scheduler:
         scheduled_ids  = {st.task_id for st in scheduled}
         deferred       = [t for t in ranked_tasks if t.id not in scheduled_ids]
         reasoning      = self.explain_decisions(scheduled, deferred)
+        warnings       = self.detect_conflicts(scheduled)
 
         return DailyPlan(
             date=date.today(),
@@ -425,6 +642,7 @@ class Scheduler:
             scheduled_tasks=scheduled,
             deferred_tasks=deferred,
             reasoning=reasoning,
+            warnings=warnings,
         )
 
     # -- Helpers -------------------------------------------------------------

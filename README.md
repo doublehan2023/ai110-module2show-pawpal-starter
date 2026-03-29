@@ -22,6 +22,43 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+Beyond the baseline priority-and-time-block scheduler, four new features were added to `pawpal_system.py`:
+
+### Task filtering (`Scheduler.filter_tasks`)
+Query `task_templates` by pet name, completion status, or both.  Completion is resolved against live `task_history` — a task counts as done only if a non-skipped log exists for today.
+
+```python
+scheduler.filter_tasks(pet_name="Luna", completed=False)  # Luna's pending tasks
+scheduler.filter_tasks(completed=True)                    # everything done today
+```
+
+### Chronological sort (`Scheduler.sort_by_time`)
+Orders any task list by preferred time window (morning → afternoon → evening → no window), using priority as a tiebreaker within each window.  Independent of `rank_by_priority` — use this for readable timelines, use `rank_by_priority` when packing by urgency.
+
+```python
+ordered = scheduler.sort_by_time(scheduler.task_templates)
+```
+
+### Automatic recurrence (`CareTask.schedule_next_occurrence` + `Scheduler.complete_task`)
+Marking a task complete with `complete_task` logs the completion *and* registers a fresh copy of the task (new UUID) in `task_templates` for the next due date — tomorrow for daily tasks, in seven days for weekly ones.  `as-needed` tasks are not recurred automatically.
+
+```python
+log, next_task = scheduler.complete_task(scheduled_task)
+# next_task.get_next_due_date() → date of next occurrence
+```
+
+### Conflict detection (`Scheduler.detect_conflicts`)
+Scans every pair of scheduled tasks for time-window overlap using the standard interval test (`a.start < b.end AND b.start < a.end`).  Returns a list of warning strings — one per conflict — labelled `[same pet]` or `[different pets]`.  Never raises; an empty list means the plan is conflict-free.  Also wired into `generate_plan` so warnings are attached to every `DailyPlan`.
+
+```python
+warnings = scheduler.detect_conflicts(plan.scheduled_tasks)
+# e.g. "WARNING: 'Luna: arthritis meds' (08:00 AM–08:05 AM) overlaps with ..."
+```
+
+---
+
 ## Getting started
 
 ### Setup
