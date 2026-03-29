@@ -109,7 +109,20 @@ if st.button("Add task"):
         st.success(f"Added task: {new_task.name}")
 
 if st.session_state.tasks:
-    st.write("**Current tasks:**")
+    # Sort by preferred time window using Scheduler.sort_by_time() if owner is ready
+    if st.session_state.owner and st.session_state.pets:
+        _temp_scheduler = Scheduler(
+            owner=st.session_state.owner,
+            pets=st.session_state.pets,
+            task_templates=st.session_state.tasks,
+            constraints=OwnerConstraints(),
+        )
+        display_tasks = _temp_scheduler.sort_by_time(st.session_state.tasks)
+        st.write("**Current tasks (sorted by time window & priority):**")
+    else:
+        display_tasks = st.session_state.tasks
+        st.write("**Current tasks:**")
+
     st.table([
         {
             "Name": t.name,
@@ -119,7 +132,7 @@ if st.session_state.tasks:
             "Frequency": t.frequency,
             "Time window": t.preferred_time_window or "—",
         }
-        for t in st.session_state.tasks
+        for t in display_tasks
     ])
 else:
     st.info("No tasks yet. Add one above.")
@@ -176,19 +189,43 @@ if st.button("Generate schedule"):
 
         st.success(f"Scheduled {len(plan.scheduled_tasks)} tasks — {plan.total_time_minutes} min total")
 
-        st.markdown("### Scheduled Tasks")
-        for i, st_task in enumerate(plan.scheduled_tasks, 1):
-            st.markdown(
-                f"**{i}. {st_task.task.name}** — "
-                f"`{st_task.scheduled_time.strftime('%I:%M %p')}` | "
-                f"{st_task.duration_minutes} min | "
-                f"priority: {st_task.priority}"
-            )
+        # Conflict warnings from Scheduler.detect_conflicts()
+        if plan.warnings:
+            st.markdown("### ⚠️ Schedule Conflicts")
+            for w in plan.warnings:
+                st.warning(w)
+        else:
+            st.success("No scheduling conflicts detected.")
+
+        # Scheduled tasks as a table, sorted by time
+        if plan.scheduled_tasks:
+            st.markdown("### Scheduled Tasks")
+            sorted_scheduled = scheduler.sort_by_time([st_task.task for st_task in plan.scheduled_tasks])
+            scheduled_by_id = {st_task.task_id: st_task for st_task in plan.scheduled_tasks}
+            st.table([
+                {
+                    "Time": scheduled_by_id[t.id].scheduled_time.strftime("%I:%M %p"),
+                    "Task": t.name,
+                    "Type": t.task_type,
+                    "Duration (min)": scheduled_by_id[t.id].duration_minutes,
+                    "Priority": scheduled_by_id[t.id].priority,
+                    "Window": t.preferred_time_window or "—",
+                }
+                for t in sorted_scheduled
+                if t.id in scheduled_by_id
+            ])
 
         if plan.deferred_tasks:
             st.markdown("### Deferred (not enough time today)")
-            for t in plan.deferred_tasks:
-                st.markdown(f"- {t.name} ({t.duration_minutes} min, {t.priority})")
+            st.table([
+                {
+                    "Task": t.name,
+                    "Duration (min)": t.duration_minutes,
+                    "Priority": t.priority,
+                    "Window": t.preferred_time_window or "—",
+                }
+                for t in plan.deferred_tasks
+            ])
 
         st.markdown("### Why this plan?")
         st.info(plan.explain())   # ← DailyPlan.explain()

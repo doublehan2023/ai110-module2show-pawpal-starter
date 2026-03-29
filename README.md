@@ -22,6 +22,37 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Features
+
+**Owner & Pet Setup**
+Create an owner profile and register one or more pets with species, breed, and medical needs. Medical needs automatically elevate medication tasks in the priority queue.
+
+**Task Management**
+Add reusable care task templates (walk, feed, meds, groom, enrichment) with a name, duration, priority level, frequency, and preferred time window. Tasks are stored as templates and reused across planning cycles.
+
+**Priority-Aware Scheduling**
+The scheduler ranks tasks by priority (high → medium → low) before time-fitting begins. Medication tasks for pets with active medical needs receive an automatic boost above other high-priority tasks. On low-energy days, all low-priority tasks are dropped before scheduling starts.
+
+**Greedy Time-Block Fitting**
+Available time is defined as one or more `TimeBlock` windows. The scheduler places tasks greedily in priority order, matching each task to its preferred window first, then filling with non-matching tasks. Tasks that exceed the remaining block time or the daily task cap are deferred, not dropped.
+
+**Chronological Sorting**
+Any task list can be sorted by preferred time window (morning → afternoon → evening → no preference), with priority as a tiebreaker within each window. Used in the UI to display tasks as a readable daily timeline, separate from the urgency-based ranking used during scheduling.
+
+**Task Filtering**
+Query the task list by pet name, completion status, or both. Completion is resolved against live task history — a task is considered done only if a non-skipped log exists for today.
+
+**Conflict Detection**
+After scheduling, every pair of tasks is checked for time-window overlap using the standard interval test (`a.start < b.end AND b.start < a.end`). Each conflict produces a warning naming both tasks, their start–end times, and whether they belong to the same pet or different pets. Warnings are attached to every `DailyPlan` and surfaced in the UI with `st.warning`.
+
+**Automatic Recurrence**
+Marking a task complete logs the completion and registers a fresh copy (new ID) in the template list for its next due date — the following day for daily tasks, seven days out for weekly ones. `as-needed` tasks are not recurred automatically.
+
+**Plain-English Explanation**
+Every generated plan includes a reasoning string that describes why each task was scheduled or deferred, notes when medical urgency influenced ordering, and flags low-energy day adjustments.
+
+---
+
 ## Smarter Scheduling
 
 Beyond the baseline priority-and-time-block scheduler, four new features were added to `pawpal_system.py`:
